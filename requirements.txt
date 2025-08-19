@@ -1,0 +1,16 @@
+matplotlib
+nanoid
+nbformat
+numpy
+openpyxl
+pandas
+pandas-gbq
+plotly
+pyarrow
+streamlit
+#st-aggrid==0.3.4.post3
+subprocess.run
+tqdm
+urllib3
+ipykernel
+openpyxl
