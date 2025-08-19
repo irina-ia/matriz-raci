@@ -221,8 +221,8 @@ with st.sidebar:
         proc_options = list(pd.unique(proc_series_full))
         preferred_proc = "Definición de Metas"
         initial_default = [p for p in proc_options if p == preferred_proc] or (proc_options[:1] if proc_options else [])
-        # if 'proc_sel_multi' not in st.session_state:
-        #     st.session_state['proc_sel_multi'] = initial_default
+        if 'proc_sel_multi' not in st.session_state:
+            st.session_state['proc_sel_multi'] = initial_default
         proc_sel = st.multiselect('Proceso', proc_options, default=st.session_state['proc_sel_multi'], key='proc_sel_multi', help='Puedes seleccionar uno o varios procesos')
 
 # -------------------- Lógica de filtrado --------------------
