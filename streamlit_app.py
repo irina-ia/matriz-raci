@@ -363,11 +363,11 @@ if 'ID' in view.columns:
     # Orden por ID ascendente por defecto (sin perder orden secundario estable)
     view = view.sort_values(by=['ID'] + [c for c in sort_by if c in view.columns], kind='mergesort').reset_index(drop=True)
 
-    # Validaciones y mensajes útiles
-    if view['ID'].isna().any():
-        st.warning("Se detectaron filas con ID vacío o no numérico. Revisa el Excel para mantener IDs fijos y únicos.")
-    if view['ID'].duplicated().any():
-        st.warning("Hay IDs duplicados en el Excel. El ID debe ser único por tarea.")
+    # # Validaciones y mensajes útiles
+    # if view['ID'].isna().any():
+    #     st.warning("Se detectaron filas con ID vacío o no numérico. Revisa el Excel para mantener IDs fijos y únicos.")
+    # if view['ID'].duplicated().any():
+    #     st.warning("Hay IDs duplicados en el Excel. El ID debe ser único por tarea.")
 else:
     st.info("No se encontró la columna 'ID' en el Excel. Se mostrará la tabla sin ID fijo.")
     # --- Lógica ANTERIOR (comentada) que generaba IDs 1..N ---
