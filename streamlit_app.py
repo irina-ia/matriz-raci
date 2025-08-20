@@ -526,3 +526,4 @@ st.download_button(
     file_name=filename,
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
+st.dataframe(df, use_container_width=True, hide_index=True,)
