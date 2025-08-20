@@ -185,7 +185,7 @@ else:
     if not candidates:
         st.error(
             "No encuentro el Excel RACI. Sube un archivo con el botón de la barra lateral "
-            "o agrega uno al repo (sugerido: data/Matriz_RACI_Nico.xlsx)."
+            "o agrega uno al repo (sugerido: data/Matriz RACI ID.xlsx)."
         )
         st.stop()
     # usa el primero
