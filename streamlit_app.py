@@ -1,8 +1,12 @@
 # streamlit_app.py — versión robusta para despliegue en Streamlit Cloud
-# - Busca el Excel en rutas típicas (evita errores por espacios/acentos)
-# - Soporta carga por file_uploader si el archivo no está en el repo
-# - Selección de hoja inteligente (usa "streamlit" o la primera disponible)
-# - Contadores abajo y descarga XLSX con nombre yyyyMMDD_proceso_area.xlsx
+# Ajustes solicitados:
+# 1) Mostrar columna "Proceso" SIEMPRE, excepto cuando hay exactamente 1 proceso seleccionado.
+# 2) Eliminar warning amarillo de Streamlit por uso de `default` + `session_state` en multiselect de Proceso.
+#    Ahora la selección inicial por defecto es **vacía** (sin proceso), para que la columna "Proceso" se vea de entrada.
+# 3) Usar columna `ID` del Excel como identificador fijo y único por tarea.
+#    (Se comenta la lógica anterior que generaba IDs 1..N)
+# 4) Fix KeyError de pandas Styler cuando la columna 'ID' no existe en la vista fallback (sin AgGrid):
+#    se aplican estilos a 'ID' solo si la columna está presente.
 
 from __future__ import annotations
 import re
@@ -70,7 +74,7 @@ st.markdown(
 
   .metric {{ border:1px solid {COLOR_BORDE}; border-radius:16px; padding:12px 14px; background:#fff; text-align:center; }}
   .metric .num {{ font-size:1.6rem; font-weight:900; }}
-  .metric .lbl {{ color:{COLOR_TXT_SUAVE}; font-weight:600; letter-spacing:.5px; white-space: nowrap; }}; font-weight:600; letter-spacing:.5px; }}
+  .metric .lbl {{ color:{COLOR_TXT_SUAVE}; font-weight:600; letter-spacing:.5px; white-space: nowrap; }}
 
   .stDataFrame {{ border:1px solid {COLOR_BORDE}; border-radius: 12px; }}
 
@@ -193,7 +197,7 @@ st.markdown("---")
 # st.caption(f"Origen: {DATA_SOURCE} — Hoja: {SHEET_USED}")
 
 # -------------------- Descubrimiento de columnas RACI --------------------
-BASE_COLS = [c for c in ["Proceso", "Tarea"] if c in df.columns]
+BASE_COLS = [c for c in ["ID", "Proceso", "Tarea"] if c in df.columns]  # incluye ID si existe
 RACI_PAT = re.compile(r"^[ARCI/\-\s,]*$")
 _cands = [c for c in df.columns if c not in BASE_COLS]
 area_cols = [
@@ -212,18 +216,23 @@ with st.sidebar:
     roles_sel = st.multiselect("Rol RACI", roles_all, default=roles_all)
     q = st.text_input("Buscar en Proceso/Tarea", placeholder="Palabra clave…")
 
-    
-
-    # Filtro Proceso (desde df completo para que siempre estén todas las opciones)
+    # --- Proceso (fix de WARNING) ---
+    # Para evitar el warning "The widget with key 'proc_sel_multi' was created with a default value
+    # but also had its value set via the Session State API", NO pasamos `default` cuando usamos `key`.
+    # Pre-cargamos el valor inicial SOLO si la clave no existe en session_state y luego llamamos al widget sin `default`.
+    # Además, dejamos la selección inicial **vacía** para que, al entrar, se muestre la columna Proceso.
     proc_sel = None
     if 'Proceso' in df.columns:
         proc_series_full = df['Proceso'].dropna().astype(str).str.strip()
         proc_options = list(pd.unique(proc_series_full))
-        preferred_proc = "Definición de Metas"
-        initial_default = [p for p in proc_options if p == preferred_proc] or (proc_options[:1] if proc_options else [])
+        initial_default: list[str] = []  # sin selección inicial
         if 'proc_sel_multi' not in st.session_state:
             st.session_state['proc_sel_multi'] = initial_default
-        proc_sel = st.multiselect('Proceso', proc_options, default=st.session_state['proc_sel_multi'], key='proc_sel_multi', help='Puedes seleccionar uno o varios procesos')
+        # Llamada SIN `default` para evitar el warning
+        proc_sel = st.multiselect(
+            'Proceso', proc_options, key='proc_sel_multi',
+            help='Puedes seleccionar uno o varios procesos'
+        )
 
 # -------------------- Lógica de filtrado --------------------
 ROLE_RE = re.compile(r"[ARCI]")
@@ -236,7 +245,7 @@ def parse_roles(cell: str) -> set[str]:
 
 
 # Construcción del dataframe de trabajo (múltiples áreas)
-id_cols = [c for c in ["Proceso", "Tarea"] if c in df.columns]
+id_cols = [c for c in ["ID", "Proceso", "Tarea"] if c in df.columns]
 areas_to_use = areas_sel if areas_sel else area_cols
 work = df.melt(id_vars=id_cols, value_vars=areas_to_use, var_name="Área", value_name="Rol")
 
@@ -271,7 +280,7 @@ count_C  = int(work["Rol"].apply(lambda x: "C" in parse_roles(x)).sum())
 count_I  = int(work["Rol"].apply(lambda x: "I" in parse_roles(x)).sum())
 count_AR = int(work["Rol"].apply(lambda x: parse_roles(x) == {"A","R"}).sum())
 
-# -------------------- CONTADORES (movidos ABAJO) --------------------
+# -------------------- CONTADORES (abajo) --------------------
 col1, col2, col3, col4, col5 = st.columns([1,1,1,1,1])
 col1.markdown(f"""
 <div class='metric'>
@@ -305,19 +314,31 @@ else:
 # -------------------- Tabla --------------------
 area_title = areas_to_use[0] if len(areas_to_use) == 1 else f"{len(areas_to_use)} áreas"
 st.subheader(f"Tareas para **{area_title}**")
+
+# Contexto de selección de procesos (texto)
 if proc_sel:
     if isinstance(proc_sel, list) and len(proc_sel) > 1:
         shown = ", ".join(proc_sel[:4]) + ("…" if len(proc_sel) > 4 else "")
         st.caption(f"Procesos seleccionados: {shown}")
     elif isinstance(proc_sel, list) and len(proc_sel) == 1:
         st.caption(f"Proceso seleccionado: {proc_sel[0]}")
+else:
+    st.caption("Sin filtro de proceso — se muestran todas las tareas")
 
-multi_proc = ('Proceso' in work.columns) and proc_sel and len(proc_sel) > 1
+# --- Columnas a mostrar
+# Regla: ocultar columna 'Proceso' SOLO si hay exactamente 1 proceso seleccionado.
+show_proceso_col = ('Proceso' in work.columns) and not (proc_sel and len(proc_sel) == 1)
+
 view_cols = ['Tarea']
-if multi_proc:
+if show_proceso_col and 'Proceso' in work.columns:
     view_cols.append('Proceso')
 view_cols += ['Área', 'Rol']
+# Agregar ID si existe, y ubicarla como primera columna en la vista
+if 'ID' in work.columns:
+    view_cols = ['ID'] + [c for c in view_cols if c != 'ID']
+
 view = work.loc[:, [c for c in view_cols if c in work.columns]].rename(columns={'Rol': 'Rol (RACI)'})
+
 # Oculta columna Área cuando sólo hay una seleccionada
 if 'Área' in view.columns and len(areas_to_use) == 1:
     view = view.drop(columns=['Área'])
@@ -327,28 +348,36 @@ if 'Área' in view.columns and len(areas_to_use) == 1:
 def _sort_key_series(s: pd.Series) -> pd.Series:
     return s.astype(str).map(lambda x: ''.join(c for c in unicodedata.normalize('NFD', x) if unicodedata.category(c) != 'Mn').lower())
 
-
-if 'Tarea' in view.columns:
-    sort_by = []
-    if 'Proceso' in view.columns:
-        sort_by.append('Proceso')
-    if 'Área' in view.columns:
-        sort_by.append('Área')
-    sort_by.append('Tarea')
+# Orden estable: por Proceso (si visible), luego Tarea
+sort_by = []
+if show_proceso_col and 'Proceso' in view.columns:
+    sort_by.append('Proceso')
+sort_by.append('Tarea')
+if sort_by:
     view = view.sort_values(by=sort_by, key=_sort_key_series, kind='mergesort').reset_index(drop=True)
 
-# Agrega columna de IDs 1..N (después del ordenamiento)
-# Elimina cualquier columna ID previa (del Excel) y crea una nueva 1..N
+# -------------------- ID: usar columna del Excel --------------------
 if 'ID' in view.columns:
-    view = view.drop(columns=['ID'])
-view.insert(0, 'ID', range(1, len(view) + 1))
-# fuerza tipo numérico para evitar orden lexicográfico en AgGrid
-view['ID'] = pd.to_numeric(view['ID'], errors='coerce').fillna(0).astype(int)
-# Asegura orden por ID ascendente por defecto
-view = view.sort_values(by='ID', kind='mergesort').reset_index(drop=True)
+    # Tipado seguro y chequeos básicos
+    view['ID'] = pd.to_numeric(view['ID'], errors='coerce').astype('Int64')
+    # Orden por ID ascendente por defecto (sin perder orden secundario estable)
+    view = view.sort_values(by=['ID'] + [c for c in sort_by if c in view.columns], kind='mergesort').reset_index(drop=True)
+
+    # Validaciones y mensajes útiles
+    if view['ID'].isna().any():
+        st.warning("Se detectaron filas con ID vacío o no numérico. Revisa el Excel para mantener IDs fijos y únicos.")
+    if view['ID'].duplicated().any():
+        st.warning("Hay IDs duplicados en el Excel. El ID debe ser único por tarea.")
+else:
+    st.info("No se encontró la columna 'ID' en el Excel. Se mostrará la tabla sin ID fijo.")
+    # --- Lógica ANTERIOR (comentada) que generaba IDs 1..N ---
+    # if 'ID' in view.columns:
+    #     view = view.drop(columns=['ID'])
+    # view.insert(0, 'ID', range(1, len(view) + 1))
+    # view['ID'] = pd.to_numeric(view['ID'], errors='coerce').fillna(0).astype(int)
 
 # --- Tabla con AG Grid (responsive y mobile-friendly) ---
-# Orden final: ID | Rol | Tarea | (Área) | (Proceso)
+# Orden final preferente: ID | Rol | Tarea | (Área) | (Proceso)
 col_order = [c for c in ['ID', 'Rol (RACI)', 'Tarea', 'Área', 'Proceso'] if c in view.columns]
 view = view[col_order]
 
@@ -361,7 +390,7 @@ if AGGRID_AVAILABLE:
     if 'ID' in view.columns:
         id_num_sort = JsCode("function(a,b){ return Number(a) - Number(b); }")
         gb.configure_column(
-            'ID', header_name='ID', width=70, minWidth=60, maxWidth=80,
+            'ID', header_name='ID', width=80, minWidth=60, maxWidth=100,
             pinned='left', sort='asc', type=['numericColumn','numberColumnFilter'], comparator=id_num_sort
         )
 
@@ -391,7 +420,7 @@ class RaciRenderer {
 }
 """)
         gb.configure_column(
-            'Rol (RACI)', header_name='Rol', pinned='right', width=170, minWidth=150, maxWidth=230,
+            'Rol (RACI)', header_name='Rol', pinned='left', width=170, minWidth=150, maxWidth=230,
             cellRenderer=raci_renderer, wrapText=False, autoHeight=True,
             cellStyle={'white-space':'nowrap','text-align':'center','font-weight':'700'}
         )
@@ -401,16 +430,9 @@ class RaciRenderer {
         gb.configure_column('Tarea', header_name='Tarea', flex=3, minWidth=260, cellStyle={'white-space':'normal'})
     if 'Área' in view.columns:
         gb.configure_column('Área', header_name='Área', flex=2, minWidth=160)
-    if 'Proceso' in view.columns:
+    if 'Proceso' in view.columns and show_proceso_col:
         gb.configure_column('Proceso', header_name='Proceso', flex=2, minWidth=160)
 
-    # Override para fijar Rol a la izquierda y centrar
-    try:
-        gb.configure_column('Rol (RACI)', header_name='Rol', pinned='left', width=170, minWidth=150, maxWidth=230,
-                            cellRenderer=raci_renderer, wrapText=False, autoHeight=True,
-                            cellStyle={'white-space':'nowrap','text-align':'center','font-weight':'700'})
-    except Exception:
-        pass
     go = gb.build()
     AgGrid(
         view,
@@ -425,8 +447,6 @@ class RaciRenderer {
 else:
     # Fallback sin AgGrid: orden ID | Rol | Tarea | (Área) | (Proceso)
     view_disp = view.copy()
-    col_order = [c for c in ['ID', 'Rol (RACI)', 'Tarea', 'Área', 'Proceso'] if c in view_disp.columns]
-    view_disp = view_disp[col_order]
 
     def raci_emoji(v: str) -> str:
         val = str(v or "").upper().replace(" ", "")
@@ -441,8 +461,7 @@ else:
 
         def raci_style(s: pd.Series):
             styles = []
-            for v in s.astype(str):
-                # Sin relleno de color: solo énfasis tipográfico y no wrap
+            for _ in s.astype(str):
                 styles.append('font-weight:700; white-space:nowrap;')
             return styles
 
@@ -450,8 +469,11 @@ else:
             view_disp.style
             .apply(raci_style, subset=['Rol (RACI)'])
             .set_properties(subset=['Rol (RACI)'], **{'text-align':'center'})
-            .set_properties(subset=['ID'], **{'text-align':'center','width':'56px'})
         )
+        # Aplicar estilos a 'ID' solo si existe para evitar KeyError
+        if 'ID' in view_disp.columns:
+            sty = sty.set_properties(subset=['ID'], **{'text-align':'center','width':'56px'})
+
         sty = sty.set_table_styles([
             {'selector': 'th', 'props': 'text-align: center;'},
             {'selector': '.col0', 'props': 'min-width:56px; width:56px; text-align:center;'}
@@ -459,37 +481,6 @@ else:
         st.dataframe(sty, use_container_width=True, hide_index=True)
     else:
         st.dataframe(view_disp, use_container_width=True, hide_index=True)
-
-# # -------------------- CONTADORES (movidos ABAJO) --------------------
-# col1, col2, col3, col4, col5 = st.columns([1,1,1,1,1])
-# col1.markdown(f"""
-# <div class='metric'>
-#   <div class='lbl'><span class='dot A'></span> A (Accountable)</div>
-#   <div class='num'>{count_A}</div>
-# </div>""", unsafe_allow_html=True)
-# col2.markdown(f"""
-# <div class='metric'>
-#   <div class='lbl'><span class='dot R'></span> R (Responsible)</div>
-#   <div class='num'>{count_R}</div>
-# </div>""", unsafe_allow_html=True)
-# col3.markdown(f"""
-# <div class='metric'>
-#   <div class='lbl'><span class='dot C'></span> C (Consulted)</div>
-#   <div class='num'>{count_C}</div>
-# </div>""", unsafe_allow_html=True)
-# col4.markdown(f"""
-# <div class='metric'>
-#   <div class='lbl'><span class='dot I'></span> I (Informed)</div>
-#   <div class='num'>{count_I}</div>
-# </div>""", unsafe_allow_html=True)
-# if {"A","R"}.issubset(set(roles_sel)):
-#     col5.markdown(f"""
-#     <div class='metric'>
-#       <div class='lbl'><span class='dot AR'></span> A/R (Accountable&nbsp;&amp;&nbsp;Responsible)</div>
-#       <div class='num'>{count_AR}</div>
-#     </div>""", unsafe_allow_html=True)
-# else:
-#     col5.empty()
 
 # -------------------- Descarga XLSX (al final) --------------------
 
